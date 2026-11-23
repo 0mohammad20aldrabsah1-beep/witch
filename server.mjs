@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv[2] === "dev";
@@ -31,9 +32,37 @@ const readBody = async (req) => {
   try { return JSON.parse(raw); } catch { throw new Error("invalid_json"); }
 };
 
-// ── Admin sessions ─────────────────────────────────────────────────────────────
-const adminSessions = new Map();
-const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+// ── Admin session — cookie موقّعة بـ HMAC (تعيش 90 يوم، تنجو من restarts) ────
+const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 يوم
+
+function signAdminToken(password) {
+  const exp = Date.now() + SESSION_TTL_MS;
+  const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+  const sig = createHmac("sha256", password).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+function verifyAdminToken(token, password) {
+  if (!token || !password) return false;
+  const dot = token.lastIndexOf(".");
+  if (dot === -1) return false;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expected = createHmac("sha256", password).update(payload).digest("base64url");
+  try {
+    if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+  } catch { return false; }
+  const { exp } = JSON.parse(Buffer.from(payload, "base64url").toString());
+  return Date.now() < exp;
+}
+
+function getAdminCookieToken(req) {
+  const cookie = req.headers.cookie || "";
+  const match = cookie.match(/(?:^|;\s*)__asid=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+const isAdmin = (req) => verifyAdminToken(getAdminCookieToken(req), adminPassword);
 
 // ── Rate limiting ──────────────────────────────────────────────────────────────
 const authRateLimits = new Map();
@@ -51,20 +80,6 @@ function checkRateLimit(ip) {
   entry.count++;
   return true;
 }
-
-function getAdminSessionToken(req) {
-  const cookie = req.headers.cookie || "";
-  const match = cookie.match(/(?:^|;\s*)__asid=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-const isAdmin = (req) => {
-  const token = getAdminSessionToken(req);
-  if (!token) return false;
-  const expiresAt = adminSessions.get(token);
-  if (!expiresAt || Date.now() > expiresAt) { adminSessions.delete(token); return false; }
-  return true;
-};
 
 const TABLE = "river_nodes";
 const visitorColumns = "id, contact_ref, contact_name, contact_address, contact_extra, member_label, secret_key_a, id_tail, extra_key_a, extra_key_b, extra_key_c, extra_key_d, extra_key_e, notify_key, stage_key, stage_state, prize_choice, nav_target, last_seen_at, created_at, updated_at";
@@ -95,17 +110,14 @@ async function handleApi(req, res, url) {
     if (!checkRateLimit(ip)) return json(res, 429, { error: "too_many_requests" });
     const body = await readBody(req);
     if (!adminPassword || body.password !== adminPassword) return json(res, 401, { error: "unauthorized" });
-    const token = randomBytes(32).toString("hex");
-    adminSessions.set(token, Date.now() + SESSION_TTL_MS);
-    res.setHeader("Set-Cookie", `__asid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`);
+    const token = signAdminToken(adminPassword);
+    res.setHeader("Set-Cookie", `__asid=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`);
     return json(res, 200, { ok: true });
   }
 
   // ── Admin logout ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/admin/logout") {
     if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
-    const token = getAdminSessionToken(req);
-    if (token) adminSessions.delete(token);
     res.setHeader("Set-Cookie", "__asid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
     return json(res, 200, { ok: true });
   }
