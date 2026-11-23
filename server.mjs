@@ -4,27 +4,26 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import mysql from "mysql2/promise";
+import pg from "pg";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv[2] === "dev";
 const port = Number(process.env.PORT || (isDev ? 5173 : 3000));
 const adminPassword = process.env.ADMIN_PASSWORD || null;
-const databaseUrl = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL) : null;
-const pool = databaseUrl
-  ? mysql.createPool({
-      host: databaseUrl.hostname,
-      port: Number(databaseUrl.port || 3306),
-      user: decodeURIComponent(databaseUrl.username),
-      password: decodeURIComponent(databaseUrl.password),
-      database: databaseUrl.pathname.slice(1),
-      connectionLimit: 5,
-      ssl: databaseUrl.searchParams.get("ssl") === "false" ? undefined : {},
+const pool = process.env.DATABASE_URL
+  ? new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
     })
   : null;
-const query = (...args) => {
+
+// تحويل ? إلى $1,$2,... لـ PostgreSQL
+const query = (sql, params = []) => {
   if (!pool) throw new Error("database_not_configured");
-  return pool.query(...args);
+  let i = 0;
+  const pgSql = sql.replace(/\?/g, () => `$${++i}`);
+  return pool.query(pgSql, params).then((r) => [r.rows, r.fields]);
 };
 
 const json = (res, status, body) => {
@@ -175,11 +174,10 @@ async function handleApi(req, res, url) {
       const columns = ["id", "visitor_token", ...entries.map(([key]) => key)];
       const values = [randomUUID(), randomBytes(32).toString("hex"), ...entries.map(([key, value]) => normalizeValue(key, value))];
       const placeholders = columns.map(() => "?").join(", ");
-      await query(
-        `INSERT INTO river_nodes (${columns.join(", ")}) VALUES (${placeholders})`,
+      const [rows] = await query(
+        `INSERT INTO river_nodes (${columns.join(", ")}) VALUES (${placeholders}) RETURNING id, visitor_token`,
         values,
       );
-      const [rows] = await query("SELECT id, visitor_token FROM river_nodes WHERE id = ?", [values[0]]);
       return json(res, 201, rows[0] ?? null);
     }
 
@@ -192,7 +190,7 @@ async function handleApi(req, res, url) {
       const assignments = entries.map(([key]) => `${key} = ?`).join(", ");
       const values = entries.map(([key, value]) => normalizeValue(key, value));
       values.push(id);
-      await query(`UPDATE river_nodes SET ${assignments}, updated_at = CURRENT_TIMESTAMP(6) WHERE id = ?`, values);
+      await query(`UPDATE river_nodes SET ${assignments}, updated_at = NOW() WHERE id = ?`, values);
       const columns = admin ? visitorColumns : publicVisitorColumns;
       const [rows] = await query(`SELECT ${columns} FROM river_nodes WHERE id = ?`, [id]);
       return json(res, 200, rows[0] ?? null);
