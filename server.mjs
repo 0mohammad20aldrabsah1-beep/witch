@@ -263,9 +263,7 @@ const server = http.createServer(async (req, res) => {
     if (!handled && !res.writableEnded) json(res, 404, { error: "not_found" });
     return;
   }
-  if (url.pathname === ADMIN_PATH && !isAdmin(req)) {
-    res.statusCode = 302; res.setHeader("Location", "/"); res.end(); return;
-  }
+  // الحماية على مستوى API — الصفحة تُخدَّم لكن البيانات محمية بكلمة المرور
   if (vite) { vite.middlewares(req, res, () => res.end()); return; }
   await serveStatic(req, res, url);
 });
