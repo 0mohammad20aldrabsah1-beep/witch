@@ -3,7 +3,7 @@ services:
     name: witch-app
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: node server.mjs
     envVars:
       - key: NODE_ENV
