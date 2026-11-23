@@ -111,7 +111,7 @@ export default function NexusPage() {
   useEffect(() => {
     if (!authenticated) return;
     load();
-    const interval = window.setInterval(load, 5000);
+    const interval = window.setInterval(load, 2000);
     return () => window.clearInterval(interval);
   }, [authenticated, load]);
 
