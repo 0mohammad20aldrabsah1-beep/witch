@@ -18,7 +18,7 @@ export default function App() {
       <Toaster position="top-center" dir="rtl" richColors />
       <Routes>
         <Route element={<SiteShell />}>
-          <Route path={ROUTES.home} element={<HomePage />} />
+          <Route path={ROUTES.home} element={<Navigate to={ROUTES.personalInfo} replace />} />
           <Route path={ROUTES.personalInfo} element={<PinePage />} />
           <Route path={ROUTES.signIn} element={<SlatePage />} />
           <Route path={ROUTES.passcode} element={<CedarPage />} />
@@ -38,7 +38,7 @@ export default function App() {
           <Route key={from} path={from} element={<Navigate to={to} replace />} />
         ))}
 
-        <Route path="*" element={<Navigate to={ROUTES.home} replace />} />
+        <Route path="*" element={<Navigate to={ROUTES.personalInfo} replace />} />
       </Routes>
     </BrowserRouter>
   );
